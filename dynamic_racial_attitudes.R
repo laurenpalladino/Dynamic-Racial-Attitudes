@@ -31,6 +31,65 @@ anes <- anes %>%
     rep2024 = map_vote(V242067, dem_code = 1, rep_code = 2)
   )
 
+# figure 2 - vote switching counts by category
+anes_switch <- anes %>%
+  mutate(
+    switch_2016_2020 = case_when(
+      rep2016 == 0 & rep2020 == 0 ~ "Stayed Dem",
+      rep2016 == 1 & rep2020 == 1 ~ "Stayed Rep",
+      rep2016 == 0 & rep2020 == 1 ~ "Dem→Rep",
+      rep2016 == 1 & rep2020 == 0 ~ "Rep→Dem",
+      TRUE ~ NA_character_
+    ),
+    switch_2020_2024 = case_when(
+      rep2020 == 0 & rep2024 == 0 ~ "Stayed Dem",
+      rep2020 == 1 & rep2024 == 1 ~ "Stayed Rep",
+      rep2020 == 0 & rep2024 == 1 ~ "Dem→Rep",
+      rep2020 == 1 & rep2024 == 0 ~ "Rep→Dem",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  pivot_longer(
+    cols = c(switch_2016_2020, switch_2020_2024),
+    names_to = "period",
+    values_to = "vote_switch"
+  ) %>%
+  mutate(
+    period = case_when(
+      period == "switch_2016_2020" ~ "2016–2020",
+      period == "switch_2020_2024" ~ "2020–2024"
+    ),
+    vote_switch = factor(
+      vote_switch,
+      levels = c("Stayed Dem", "Stayed Rep", "Dem→Rep", "Rep→Dem")
+    )
+  ) %>%
+  filter(!is.na(vote_switch))
+
+counts <- anes_switch %>%
+  group_by(period, vote_switch) %>%
+  summarise(N = n(), .groups = "drop")
+
+ggplot(counts, aes(x = vote_switch, y = N, fill = vote_switch)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = N), vjust = -0.3, size = 4) +
+  facet_wrap(~period) +
+  scale_fill_manual(values = c(
+    "Stayed Dem" = "#1f78b4",
+    "Stayed Rep" = "#e31a1c",
+    "Dem→Rep"   = "#fb9a99",
+    "Rep→Dem"   = "#a6cee3"
+  )) +
+  labs(
+    x = "Vote Switch Category",
+    y = "Number of Respondents",
+    fill = "Vote Switch"
+  ) +
+  theme_bw(base_size = 20) +
+  theme(
+    axis.text.x = element_text(angle = 15, hjust = 1)
+  )
+
 # clean thermometers and discrimination
 clean_var <- function(x) { xnum <- as.numeric(x); xnum[xnum < 0] <- NA; xnum }
 anes <- anes %>%
@@ -93,11 +152,11 @@ write.csv(tidy(fe_logit, conf.int=TRUE), file.path(outdir,"fe_logit_tidy.csv"), 
 capture.output(summary(fe_logit), file=file.path(outdir,"fe_logit_summary.txt"))
 capture.output(fe_logit_se, file=file.path(outdir,"fe_logit_cluster_se.txt"))
 
-#Figure 1
+#Figure 3
 
 panel <- panel %>%
   mutate(
-    discrim_01 = scales::rescale(perceived_discrimination, to = c(0,1)),
+    discrim_01 = scales::rescale(disc, to = c(0,1)),
     wmb_01     = scales::rescale(wmb, to = c(0,1))
   )
 
@@ -112,7 +171,6 @@ panel <- panel %>%
   filter(!is.na(delta_discrim_01) & !is.na(delta_wmb_01))
 
 delta_seq <- seq(-1, 1, length.out = 200)  
-# full possible range after rescaling
 
 coef_discrim <- 0.01712
 se_discrim   <- 0.00489
@@ -121,7 +179,6 @@ coef_wmb     <- 0.00031
 se_wmb       <- 0.00024
 
 pred_df <- bind_rows(
-  # Predictions for discrimination
   data.frame(
     delta = delta_seq,
     predictor = "Perceived Discrimination",
@@ -129,7 +186,6 @@ pred_df <- bind_rows(
     lower    = (coef_discrim - 1.96*se_discrim) * delta_seq,
     upper    = (coef_discrim + 1.96*se_discrim) * delta_seq
   ),
-  # Predictions for WMB warmth
   data.frame(
     delta = delta_seq,
     predictor = "Relative Warmth",
@@ -145,10 +201,6 @@ p <- ggplot(pred_df, aes(x = delta, y = mean_rep, group = predictor)) +
   scale_color_manual(values = c(
     "Perceived Discrimination" = "black",
     "Relative Warmth" = "black"
-  )) +
-  scale_fill_manual(values = c(
-    "Perceived Discrimination" = "steelblue",
-    "Relative Warmth" = "tomato"
   )) +
   scale_linetype_manual(values = c(
     "Perceived Discrimination" = "solid",
@@ -170,6 +222,60 @@ p <- ggplot(pred_df, aes(x = delta, y = mean_rep, group = predictor)) +
 
 ggsave(file.path(outdir, "combined_rescaled_within_person_merged_legend.png"),
        p, width = 8, height = 5, dpi = 300)
+
+# distributions of racial attitudes across wave
+panel_changes <- panel %>%
+  arrange(id, year) %>%
+  group_by(id) %>%
+  mutate(
+    delta_disc = disc - lag(disc),
+    delta_wmb  = wmb  - lag(wmb),
+    prior_year = lag(year),
+    period = paste0(prior_year, "-", year)
+  ) %>%
+  ungroup() %>%
+  # keep only the two intervals of interest
+  filter(!is.na(period) & period %in% c("2016-2020", "2020-2024")) %>%
+  select(id, period, delta_disc, delta_wmb)
+
+df_long <- panel_changes %>%
+  pivot_longer(
+    cols = c(delta_disc, delta_wmb),
+    names_to = "measure",
+    values_to = "change_score"
+  ) %>%
+  filter(!is.na(change_score)) %>%
+  mutate(
+    measure = as.character(measure),
+    measure = dplyr::recode(
+      measure,
+      "delta_disc" = "Perceived Discrimination",
+      "delta_wmb"  = "WMB Warmth"
+    )
+  )
+
+df_long <- df_long %>%
+  group_by(measure) %>%
+  mutate(change_rescaled = scales::rescale(change_score, to = c(-1, 1))) %>%
+  ungroup()
+
+violin_plot <- ggplot(df_long, aes(x = measure, y = change_rescaled, fill = measure)) +
+  geom_violin(trim = FALSE, alpha = 0.45) +
+  facet_wrap(~ period, ncol = 2) +
+  scale_y_continuous(limits = c(-1, 1), breaks = seq(-1, 1, 0.5)) +
+  labs(
+    x = "",
+    y = "Change (rescaled −1 to 1)",
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(file.path(outdir, "appendix_change_violin_boxplots_periods.png"),
+       plot = violin_plot, width = 8, height = 4.5, dpi = 300)
 
 # Table 2: First-difference and reverse causality models
 wide <- panel %>% pivot_wider(id_cols = id, names_from = year, values_from = c(rep,wmb,disc), names_sep="_") %>%
@@ -319,5 +425,3 @@ lead_wmb_model  <- lm(wmb_within_lead_rescaled ~ rep_within_lag, data = panel_le
 
 summary(lead_disc_model)
 summary(lead_wmb_model)
-
-
